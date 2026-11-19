@@ -13,7 +13,6 @@ import (
 	"github.com/grafana/loki/v3/pkg/dataobj/internal/result"
 	"github.com/grafana/loki/v3/pkg/dataobj/internal/util/slicegrow"
 	"github.com/grafana/loki/v3/pkg/dataobj/sections/internal/columnar"
-	"github.com/grafana/loki/v3/pkg/util/labelpool"
 )
 
 // Iter iterates over records in the provided decoder. All logs sections are
@@ -110,15 +109,8 @@ func MakeColumnarDataset(section *Section) (*ColumnarDataset, error) {
 func DecodeRow(columns []*Column, row dataset.Row, record *Record) error {
 	record.Reset()
 
-	labelBuilder := labelpool.Get()
-	defer labelpool.Put(labelBuilder)
-
-	// Sections store metadata columns sorted by name, so labels usually
-	// arrive sorted. Track the order to skip the sort in that case.
-	var (
-		labelsSorted = true
-		lastLabel    string
-	)
+	metadata := newMetadataBuilder()
+	defer metadata.release()
 
 	for columnIndex, columnValue := range row.Values {
 		column := columns[columnIndex]
@@ -150,11 +142,7 @@ func DecodeRow(columns []*Column, row dataset.Row, record *Record) error {
 
 			// An empty value is kept as a label. The key is present on the line, it just
 			// holds no value, and the chunk path surfaces that as a distinct label too.
-			if column.Name < lastLabel {
-				labelsSorted = false
-			}
-			lastLabel = column.Name
-			labelBuilder.Add(column.Name, metadataValue(columnValue.Binary()))
+			metadata.add(column.Name, columnValue.Binary())
 
 		case ColumnTypeMessage:
 			if ty := columnValue.Type(); ty != datasetmd.PHYSICAL_TYPE_BINARY {
@@ -168,10 +156,6 @@ func DecodeRow(columns []*Column, row dataset.Row, record *Record) error {
 		}
 	}
 
-	// Commit the final metadata to the record.
-	if !labelsSorted {
-		labelBuilder.Sort()
-	}
-	record.Metadata = labelBuilder.Labels()
+	record.Metadata = metadata.labels()
 	return nil
 }
